@@ -84,7 +84,7 @@
       ${summaryRow('下栏小计',t=>t.lower)}${summaryRow('跨轮留骰支出',t=>t.paid?`−${t.paid}`:'0')}${summaryRow('总分',t=>t.total,'subtotal-row score-total')}
       </tbody></table>
       <p class="score-disclaimer">同一类别只能记分一次；可以主动记 0 分。五条可计入葫芦（25 分），但不触发额外快艇奖励或万能牌计分。</p>
-      ${game.log?.length ? `<div class="lastlog"><strong>最近记录：</strong> ${game.log.slice(0,3).map(l=>`${esc(game.players[l.player]?.name)} ${l.category==='carry'?`保留 ${l.count} 颗，−${-l.score} 分`:`${esc(Core.CATEGORIES.find(c=>c.id===l.category)?.label||'')} +${l.score}`}`).join(' · ')}</div>`:''}
+      <div class="lastlog" aria-live="polite"><strong>最近记录</strong><span class="lastlog-text">${game.log?.length ? game.log.slice(0,2).map(l=>`${esc(game.players[l.player]?.name)} ${l.category==='carry'?`保留 ${l.count} 颗，−${-l.score} 分`:`${esc(Core.CATEGORIES.find(c=>c.id===l.category)?.label||'')} +${l.score}`}`).join(' · ') : '还没有记录，掷骰并选择计分格后会显示在这里。'}</span></div>
     </section>`;
   }
   function endBanner() {
@@ -109,14 +109,19 @@
       title='全局结束';subtitle='13 个类别已全部填写。';actionButtons=`<button type="button" class="button primary big" id="playAgain">再来一局</button>`;explain='总分 = 13 格得分 + 上半区奖励 − 跨轮留骰费用。';
     }
     const count=game.carrySelection?.filter(Boolean).length||0;
-    const tag=game.phase==='rolling'?`<span class="tag emphasis">${game.rollsUsed===0?'等待第一掷':`已掷 ${game.rollsUsed} / 3 次`}</span><span class="tag">锁定 ${game.held.filter(Boolean).length} 颗</span>`:game.phase==='carry'?`<span class="tag emphasis">已选 ${count} / 5 颗</span><span class="tag">本次扣 ${count*Core.COST_PER_DIE} 分</span>`:'<span class="tag emphasis">本局结束</span>';
-    return `<section class="panel roll-panel"><span class="eyebrow">${game.phase==='rolling'?'DICE TABLE':game.phase==='carry'?'KEEP FOR NEXT ROUND':'GAME OVER'}</span>
-      <h1 class="play-title">${title}</h1><p class="play-subtitle">${subtitle}</p><div class="roll-tags">${tag}</div>
-      ${game.phase==='carry'?`<div class="selection-summary"><span>本次保留 ${count} 颗 · 直接计入扣分</span><strong>−${count*Core.COST_PER_DIE}</strong></div>`:''}
+    const tag=game.phase==='rolling'?`<span class="tag emphasis">${game.rollsUsed===0?'等待第一掷':`已掷 ${game.rollsUsed} / 3 次`}</span><span class="tag">锁定 ${game.held.filter(Boolean).length} 颗</span>`:game.phase==='carry'?`<span class="tag emphasis">已选 ${count} / 5 颗</span><span class="tag">保留费用 ${Core.COST_PER_DIE} 分/颗</span>`:'<span class="tag emphasis">本局结束</span><span class="tag">已完成 13 格</span>';
+    const metricLabel=game.phase==='carry'?`本次选择 ${count} 颗` : game.phase==='finished'?'全部计分完成':'当前掷骰进度';
+    const metricValue=game.phase==='carry'?`−${count*Core.COST_PER_DIE} 分`:game.phase==='finished'?'13 / 13':`${game.rollsUsed} / 3 次`;
+    const footnote=isOnline()&&!net.connected?'联机尚未建立。请先在 P2P 联机流程中完成连接。':game.phase==='carry'?`选中的骰子会进入你的下一轮；本次费用 ${Core.COST_PER_DIE} 分/颗，确认后计入总分。`:game.phase==='finished'?'全部 13 个计分格已完成，可查看对局总结或开启新对局。':`每颗跨轮保留费用为 ${Core.COST_PER_DIE} 分，只有本轮计分后才需要决定是否保留。`;
+    return `<section class="panel roll-panel">
+      <div class="turn-intro"><span class="eyebrow">${game.phase==='rolling'?'DICE TABLE':game.phase==='carry'?'KEEP FOR NEXT ROUND':'GAME OVER'}</span>
+      <h1 class="play-title" title="${esc(p.name)}">${title}</h1><p class="play-subtitle">${subtitle}</p></div>
+      <div class="roll-tags">${tag}</div>
+      <div class="turn-metric"><span>${metricLabel}</span><strong>${metricValue}</strong></div>
       <div class="dice-row">${game.dice.map(dieMarkup).join('')}</div>
-      <div class="turn-actions">${actionButtons}</div><p class="microcopy">${explain}</p>
-      ${game.phase==='rolling'&&Core.filledCount(p)===0?`<div class="tip"><strong>如何开始</strong> 点击「掷骰」，然后按需锁定骰子、重掷与记分。计分后可花 ${Core.COST_PER_DIE} 分/颗保留骰子到自己下一轮。</div>`:''}
-      ${isOnline()&&!net.connected?'<div class="tip">联机尚未完成，请用「新对局 → P2P 联机」继续配对。</div>':''}
+      <div class="turn-actions">${actionButtons}</div>
+      <p class="microcopy">${explain}</p>
+      <div class="turn-footnote"><strong>规则提示</strong><span>${footnote}</span></div>
     </section>`;
   }
   function welcomeMarkup() {
@@ -250,7 +255,7 @@
   }
   function newModal() {
     openModal('选择游戏模式', `<p class="muted-text">每局 13 轮。仅支持挑战 AI 和 P2P 联机，不再提供同屏双人或个人练习。</p>
-      <div class="option-grid"><button type="button" class="mode-choice" data-start-mode="ai"><span class="mode-icon">01 / SOLO</span><strong>挑战 AI</strong><small>三档难度，掷骰及留骰由 AI 自动决策</small></button>
+      <div class="option-grid"><button type="button" class="mode-choice" data-start-mode="ai"><span class="mode-icon">01 / SOLO</span><strong>挑战 AI</strong><small>三档难度，概率搜索与跨轮策略各不相同</small></button>
       <button type="button" class="mode-choice" data-start-mode="online"><span class="mode-icon">02 / P2P</span><strong>P2P 联机</strong><small>与好友交换连接码，实时对局</small></button></div>
       ${game?.phase!=='finished'&&game?'<p class="muted-text">开始其他对局将结束当前进度；游戏不会在本地自动保存。</p>':''}`);
   }
@@ -259,11 +264,11 @@
       <label class="field-label" for="setupNameOne">我的昵称</label><input id="setupNameOne" class="field-input" maxlength="16" value="我" autocomplete="off" />
       <label class="field-label" for="aiLevel">AI 难度</label>
       <div class="difficulty-picks" role="radiogroup" aria-label="AI 难度">
-        <label><input type="radio" name="aiLevel" value="easy" ${aiDifficulty==='easy'?'checked':''}><span><strong>简单</strong><small>前瞻 1 回合 · 偶尔次优</small></span></label>
-        <label><input type="radio" name="aiLevel" value="medium" ${aiDifficulty==='medium'?'checked':''}><span><strong>中等</strong><small>前瞻 2 回合 · 偶尔次优</small></span></label>
-        <label><input type="radio" name="aiLevel" value="hard" ${aiDifficulty==='hard'?'checked':''}><span><strong>困难</strong><small>前瞻 3 回合 · 偶尔次优</small></span></label>
+        <label><input type="radio" name="aiLevel" value="easy" ${aiDifficulty==='easy'?'checked':''}><span><strong>简单</strong><small>本轮决策 · 偶尔次优</small></span></label>
+        <label><input type="radio" name="aiLevel" value="medium" ${aiDifficulty==='medium'?'checked':''}><span><strong>中等</strong><small>兼顾下轮 · 偶尔次优</small></span></label>
+        <label><input type="radio" name="aiLevel" value="hard" ${aiDifficulty==='hard'?'checked':''}><span><strong>困难</strong><small>兼顾后两轮 · 偶尔次优</small></span></label>
       </div>
-      <p class="muted-text">采用有限抽样的多回合策略搜索，结果是近似最优，不是穷举全局最优。</p>
+      <p class="muted-text">本轮掷骰使用精确概率枚举；未来回合采用按类别估计的有限前瞻。AI 不提前知道真实骰点。</p>
       <div class="modal-actions"><button type="button" class="button" id="backToModes">返回</button><button type="button" class="button primary" id="startAI">开始挑战</button></div>`);
   }
   function cancelAI() {aiGeneration++;if(aiTimer!==null)clearTimeout(aiTimer);aiTimer=null;}
