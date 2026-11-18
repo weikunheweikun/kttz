@@ -14,7 +14,25 @@
   const $title = $('modalTitle');
   let game;
   let chosenCategory = null;
-  let aiDifficulty = 'medium';
+  let aiDifficulty = 'normal';
+  let aiWorker=null,aiReq=0;
+  const pendingAI=new Map();
+  function initAIWorker(){
+    if(aiWorker)return aiWorker;
+    if(typeof Worker!=='function')return null;
+    try {
+      const w=new Worker('ai_worker.js?v=12');
+      w.onmessage=e=>{const {id,decision,error}=e.data||{};const resolve=pendingAI.get(id);if(!resolve)return;pendingAI.delete(id);if(error)resolve.reject(new Error(error));else resolve.resolve(decision);};
+      w.onerror=e=>{for(const p of pendingAI.values())p.reject(new Error('AI 后台计算失败'));pendingAI.clear();console.error('AI worker failed',e);try{w.terminate();}catch{}aiWorker=null;};
+      aiWorker=w;
+    }catch(e){console.warn('worker unavailable; using main thread',e);}
+    return aiWorker;
+  }
+  function requestAI(g,level){
+    const w=initAIWorker();
+    if(!w)return Promise.resolve(AI.decide(g,level));
+    return new Promise((resolve,reject)=>{const id=++aiReq;pendingAI.set(id,{resolve,reject});w.postMessage({id,game:g,level});});
+  }
   let aiTimer = null;
   let aiGeneration = 0;
   let summaryShown = false;
@@ -52,7 +70,7 @@
   function playerMarkup(p,i) {
     const t=Core.totals(p),active=game.phase!=='finished'&&game.turn===i;
     return `<section class="player-card panel ${active?'active':''}">
-      <div class="player-line"><span class="player-name">${esc(p.name)}</span><span class="player-flag ${active?'':'muted'}">${game.phase==='finished'?'已完成':active?(game.mode==='ai'&&i===1?'AI 思考中':'当前玩家'):'等待'}</span></div>
+      <div class="player-line"><span class="player-name">${esc(p.name)}</span><span class="player-flag ${active?'':'muted'}">${game.phase==='finished'?'已完成':active?'当前玩家':'等待'}</span></div>
       <div class="player-total"><strong>${t.total}</strong><small>分 · ${t.filled}/13 格</small></div>
       <div class="player-foot"><span>上栏 ${t.upper}/63</span><span>奖励 ${t.bonus}</span><span class="${t.paid?'red':''}">留骰 −${t.paid}</span></div>
     </section>`;
@@ -96,13 +114,13 @@
     let title,subtitle,actionButtons,explain;
     if (game.phase==='rolling') {
       title=`${esc(p.name)} · 第 ${Math.min(turn,13)} / 13 轮`;
-      subtitle=(game.mode==='ai'&&game.turn===1)?`AI 正在评估${AI.LEVELS[aiDifficulty].horizon}回合内的掷骰、计分和留骰方案。` : canAct()?(game.rollsUsed===0?'尚未掷骰。点击下方「掷骰」开始，已购买的跨轮骰子会保留在桌面上。':'点击骰子锁定或解锁，最多掷 3 次；满意后选择计分格。'):(isOnline()&&!net.connected?'请先完成点对点连接，再开始游戏。':'等待对方完成本轮操作。');
+      subtitle=(game.mode==='ai'&&game.turn===1)?'等待对手完成本轮操作。' : canAct()?(game.rollsUsed===0?'尚未掷骰。点击下方「掷骰」开始，已购买的跨轮骰子会保留在桌面上。':'点击骰子锁定或解锁，最多掷 3 次；满意后选择计分格。'):(isOnline()&&!net.connected?'请先完成点对点连接，再开始游戏。':'等待对方完成本轮操作。');
       actionButtons=`<button type="button" class="button primary big" id="rollButton" ${!canAct()||game.rollsUsed>=3?'disabled':''}>${game.rollsUsed===0?'掷骰 · 开始本轮':'重掷未锁定骰子'} <span class="button-count">${game.rollsUsed<3?`${3-game.rollsUsed} 次剩余`:'次数已用完'}</span></button><button type="button" class="button big ghost" id="scoreScroll">计分卡 ↓</button>`;
       explain=game.rollsUsed>=3?'三次掷骰已用完，请在计分卡中选择一个类别。':game.rollsUsed===0?'第一掷需要手动点击。未购买的骰子不会提前显示点数。':game.held.every(Boolean)?'五颗都已锁定。可以直接计分，或者先解锁再掷。':'锁定的骰子不会参与下一次重掷，跨轮保留的骰子也能解锁。';
     } else if (game.phase==='carry') {
       const n=game.carrySelection.filter(Boolean).length,cost=n*Core.COST_PER_DIE;
       title=`${esc(p.name)} · 本轮已记分`;
-      subtitle=game.mode==='ai'&&game.turn===1?`AI 正在决定是否花费 ${Core.COST_PER_DIE} 分/颗，把骰子留到下一轮。`:`现在选择要带到自己下一轮的骰子（最多 5 颗）。每颗扣除 ${Core.COST_PER_DIE} 分；不选即不扣分。`;
+      subtitle=game.mode==='ai'&&game.turn===1?'等待对手完成本轮操作。':`现在选择要带到自己下一轮的骰子（最多 5 颗）。每颗扣除 ${Core.COST_PER_DIE} 分；不选即不扣分。`;
       actionButtons=`<button type="button" class="button green big" id="confirmCarry" ${!canAct()?'disabled':''}>${n?'支付 '+cost+' 分，':'不保留，'}进入下一轮 →</button>`;
       explain='被选择的骰子下轮会作为起始点数，并默认锁住；下轮可以解除锁定继续重掷。';
     } else {
@@ -128,7 +146,7 @@
     return `<section class="panel welcome-card"><span class="eyebrow">YACHT / A SMALL STRATEGY GAME</span>
       <h1>五颗骰子。十三轮抉择。</h1><p>原版 13 格快艇计分，快艇 60 分。每轮计分后可以支付 3 分/颗，带骰子进入下一轮。</p>
       <div class="home-choices">
-        <button class="mode-choice" data-start-mode="ai"><span class="mode-icon">01 / SOLO</span><strong>挑战 AI</strong><small>简单、中等、困难三种前瞻策略</small></button>
+        <button class="mode-choice" data-start-mode="ai"><span class="mode-icon">01 / SOLO</span><strong>挑战 AI</strong><small>与电脑对战</small></button>
         <button class="mode-choice" data-start-mode="online"><span class="mode-icon">02 / ONLINE</span><strong>P2P 联机</strong><small>交换连接码，与好友直接对战</small></button>
       </div><p class="welcome-note">无需注册 · 无本地自动存档 · 重新打开页面即为新对局</p></section>`;
   }
@@ -255,29 +273,35 @@
   }
   function newModal() {
     openModal('选择游戏模式', `<p class="muted-text">每局 13 轮。仅支持挑战 AI 和 P2P 联机，不再提供同屏双人或个人练习。</p>
-      <div class="option-grid"><button type="button" class="mode-choice" data-start-mode="ai"><span class="mode-icon">01 / SOLO</span><strong>挑战 AI</strong><small>三档难度，概率搜索与跨轮策略各不相同</small></button>
+      <div class="option-grid"><button type="button" class="mode-choice" data-start-mode="ai"><span class="mode-icon">01 / SOLO</span><strong>挑战 AI</strong><small>与电脑对战</small></button>
       <button type="button" class="mode-choice" data-start-mode="online"><span class="mode-icon">02 / P2P</span><strong>P2P 联机</strong><small>与好友交换连接码，实时对局</small></button></div>
       ${game?.phase!=='finished'&&game?'<p class="muted-text">开始其他对局将结束当前进度；游戏不会在本地自动保存。</p>':''}`);
   }
   function setupAI() {
-    openModal('挑战 AI', `<p class="muted-text">你先手，AI 后手。AI 会使用与玩家相同的 13 格计分、3 次掷骰及 3 分/颗跨轮留骰规则。</p>
-      <label class="field-label" for="setupNameOne">我的昵称</label><input id="setupNameOne" class="field-input" maxlength="16" value="我" autocomplete="off" />
-      <label class="field-label" for="aiLevel">AI 难度</label>
-      <div class="difficulty-picks" role="radiogroup" aria-label="AI 难度">
-        <label><input type="radio" name="aiLevel" value="easy" ${aiDifficulty==='easy'?'checked':''}><span><strong>简单</strong><small>本轮决策 · 偶尔次优</small></span></label>
-        <label><input type="radio" name="aiLevel" value="medium" ${aiDifficulty==='medium'?'checked':''}><span><strong>中等</strong><small>兼顾下轮 · 偶尔次优</small></span></label>
-        <label><input type="radio" name="aiLevel" value="hard" ${aiDifficulty==='hard'?'checked':''}><span><strong>困难</strong><small>兼顾后两轮 · 偶尔次优</small></span></label>
-      </div>
-      <p class="muted-text">本轮掷骰使用精确概率枚举；未来回合采用按类别估计的有限前瞻。AI 不提前知道真实骰点。</p>
+    openModal('挑战 AI', `<p class="muted-text">你先手，电脑后手，每人依次完成 13 格计分。</p>
+      <label class="field-label" for="setupNameOne">我的昵称</label>
+      <input id="setupNameOne" class="field-input" maxlength="16" value="我" autocomplete="off" />
+      <label class="field-label" for="setupAIDifficulty">挑战难度</label>
+      <select id="setupAIDifficulty" class="field-input">
+        <option value="easy">简单</option><option value="normal" selected>普通</option><option value="hard">困难</option>
+      </select>
       <div class="modal-actions"><button type="button" class="button" id="backToModes">返回</button><button type="button" class="button primary" id="startAI">开始挑战</button></div>`);
   }
-  function cancelAI() {aiGeneration++;if(aiTimer!==null)clearTimeout(aiTimer);aiTimer=null;}
+  function cancelAI() {
+    aiGeneration++;
+    if(aiTimer!==null)clearTimeout(aiTimer);
+    aiTimer=null;
+    if(aiWorker){try{aiWorker.terminate();}catch{}aiWorker=null;}
+    for(const p of pendingAI.values())p.reject(new Error('旧对局已取消'));
+    pendingAI.clear();
+  }
   function startAI() {
-    const level=document.querySelector('input[name="aiLevel"]:checked')?.value||'medium';
     const name=($('setupNameOne')?.value||'我').trim().slice(0,16)||'我';
-    cancelAI();closeNetwork();aiDifficulty=level;summaryShown=false;
-    game=Core.newGame('ai',[name,'AI · '+AI.LEVELS[level].label]);
-    closeModal();render();showToast('已开始挑战 · AI '+AI.LEVELS[level].label);
+    aiDifficulty=$('setupAIDifficulty')?.value||'normal';
+    cancelAI();closeNetwork();summaryShown=false;
+    const computerName={easy:'简单 AI',normal:'普通 AI',hard:'困难 AI'}[aiDifficulty]||'AI';
+    game=Core.newGame('ai',[name,computerName]);
+    closeModal();render();showToast('已开始挑战');
   }
   function scheduleAI() {
     if(!game||game.mode!=='ai'||game.turn!==1||game.phase==='finished'||rollAnimating||aiTimer!==null)return;
@@ -288,7 +312,7 @@
     if(generation!==aiGeneration||!game||game.mode!=='ai'||game.turn!==1||game.phase==='finished'||rollAnimating)return;
     const reference=game;
     try {
-      const decision=AI.decide(game,aiDifficulty);
+      const decision=await requestAI(game,aiDifficulty);
       if(generation!==aiGeneration||reference!==game)return;
       if(decision.type==='roll'){
         for(let i=0;i<5;i++){
@@ -302,7 +326,7 @@
         for(let i=0;i<5;i++)if(decision.mask&(1<<i))Core.action(game,'toggleCarry',{index:i});
         Core.action(game,'confirmCarry');render();
       }
-    } catch(e){warn(e);console.error('AI action error',e);}
+    } catch(e){if(generation===aiGeneration){warn(e);console.error('AI action error',e);}}
     if(generation===aiGeneration&&reference===game)scheduleAI();
   }
   function closeNetwork() {
